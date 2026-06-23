@@ -1,16 +1,3 @@
-"""
-Doküman Asistanı — Streamlit Cloud sürümü (tek dosya, kendi içinde tam).
-
-Ayarları Streamlit Cloud Secrets'tan okur. Yerel sürümden farkları:
-- logic/ paketine bağımlı DEĞİL (import yolu sorunu olmaz).
-- ChromaDB KULLANMAZ — bunun yerine hafif bellek-içi vektör deposu kullanır
-  (Streamlit Cloud'da Python 3.14 + protobuf ile chromadb çöküyor; ayrıca
-  Cloud diski geçici olduğu için kalıcı DB'nin de anlamı yok).
-
-NOT: Yüklenen dokümanlar yalnızca o oturumda hafızada tutulur; uygulama
-yeniden başlarsa tekrar yüklemen gerekir.
-"""
-
 import io
 import json
 import re
@@ -22,7 +9,7 @@ from urllib.request import Request, urlopen
 import numpy as np
 import streamlit as st
 
-st.set_page_config(page_title="Doküman Asistanı", layout="wide")
+st.set_page_config(page_title="Document Insight Agent", layout="wide")
 
 
 # === Ayarlar (Secrets) ====================================================
@@ -224,7 +211,7 @@ def answer(question, history, chunks, vectors):
 
 
 # === Arayüz ===============================================================
-st.title("Doküman Asistanı")
+st.title("Document Insigt Agent")
 st.caption("Dokümanlarını yükle, içerikleri hakkında günlük dille soru sor. "
            "Yanıtlar yalnızca senin yüklediğin belgelere dayanır.")
 
