@@ -1,59 +1,33 @@
 import sys
-import tempfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import streamlit as st
 
-st.set_page_config(page_title="Doküman Asistanı", layout="wide")
+from logic import config
+from logic.chunker import chunk_pages
+from logic.document_loader import SUPPORTED_EXTENSIONS, load_document
+from logic.embeddings import embed_texts
+from logic.rag import answer_question
+from logic.vector_store import (
+    add_document,
+    clear_all,
+    delete_document,
+    list_documents,
+)
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-
-import config
-
-
-def _secret(key: str, default: str = "") -> str:
-    """Streamlit Secrets'tan güvenli okuma. Secrets tanımlı değilse hata vermez."""
-    try:
-        value = st.secrets.get(key, default)
-    except Exception:
-        value = default
-    return str(value).strip() if value else default
-
-
-config.LLM_BASE_URL = _secret("LLM_BASE_URL")
-config.LLM_MODEL = _secret("LLM_MODEL")
-config.LLM_API_KEY = _secret("LLM_API_KEY")
-config.EMBEDDING_MODEL = _secret("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
-config.RERANK_MODEL = _secret("RERANK_MODEL")  # ücretsiz tier RAM'i için varsayılan kapalı
-# Geçici klasör: Streamlit Cloud yeniden başlayınca sıfırlanır.
-config.PERSIST_DIR = Path(tempfile.gettempdir()) / "doc_int_chroma"
-
-from chunker import chunk_pages
-from document_loader import SUPPORTED_EXTENSIONS, load_document
-from embeddings import embed_texts
-from rag import answer_question
-from vector_store import add_document, clear_all, delete_document, list_documents
 
 PERSIST_DIR = config.PERSIST_DIR
 
+
+st.set_page_config(page_title="Doküman Asistanı", layout="wide")
 st.title("Doküman Asistanı")
 st.caption(
     "Dokümanlarını yükle, içerikleri hakkında günlük dille soru sor. "
     "Yanıtlar yalnızca senin yüklediğin belgelere dayanır."
 )
 
-if not config.LLM_BASE_URL or not config.LLM_MODEL:
-    st.error(
-        "Model bilgileri Secrets'tan okunamadı. Streamlit Cloud → **Manage app → "
-        "Settings → Secrets** altına en az `LLM_BASE_URL` ve `LLM_MODEL` gir, "
-        "sonra uygulamayı yeniden başlat (Reboot)."
-    )
-    with st.expander("Secrets durumu (değerler gizli)"):
-        for key in ("LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "EMBEDDING_MODEL", "RERANK_MODEL"):
-            found = bool(_secret(key))
-            st.write(f"{'✓' if found else '✗'} `{key}` — {'bulundu' if found else 'boş/yok'}")
-    st.stop()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -62,6 +36,7 @@ if "last_sources" not in st.session_state:
 
 
 def render_sources(sources) -> None:
+    """Bir yanıtın hangi doküman bölümlerine dayandığını gösterir."""
     if not sources:
         return
     with st.expander(f"Yanıtın dayandığı doküman bölümleri ({len(sources)})"):
@@ -72,7 +47,6 @@ def render_sources(sources) -> None:
 
 with st.sidebar:
     st.header("Doküman yükle")
-    st.caption("Yüklenen dokümanlar geçicidir; uygulama yeniden başlarsa tekrar yükle.")
     uploaded = st.file_uploader(
         "PDF, Word, metin (TXT), Markdown veya web sayfası (HTML) dosyaları",
         type=[ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS],
@@ -86,8 +60,13 @@ with st.sidebar:
                 if not pages:
                     st.warning(f"'{f.name}' boş görünüyor veya içinden metin okunamadı.")
                     continue
-                chunks = chunk_pages(pages, max_chars=config.CHUNK_SIZE, overlap=config.CHUNK_OVERLAP)
-                add_document(PERSIST_DIR, f.name, chunks, embed_texts([c.text for c in chunks]))
+                chunks = chunk_pages(
+                    pages,
+                    max_chars=config.CHUNK_SIZE,
+                    overlap=config.CHUNK_OVERLAP,
+                )
+                vectors = embed_texts([c.text for c in chunks])
+                add_document(PERSIST_DIR, f.name, chunks, vectors)
                 st.success(f"'{f.name}' eklendi.")
             except Exception as e:
                 st.error(f"'{f.name}' eklenirken bir sorun oluştu: {e}")
