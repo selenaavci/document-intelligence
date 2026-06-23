@@ -1,15 +1,3 @@
-"""
-Doküman Asistanı — Streamlit Cloud sürümü.
-
-Lokal sürümle aynı RAG pipeline'ını (hybrid arama + reranking + query rewrite)
-kullanır; tek farkı ayarları logic/config.py yerine Streamlit Cloud Secrets'tan
-okumasıdır. Ayarları "Manage app → Settings → Secrets" altından gireceksin
-(örnek için .streamlit/secrets.toml.example dosyasına bak).
-
-NOT — Streamlit Cloud diski geçicidir: uygulama uyuyup uyandığında veya yeniden
-deploy edildiğinde yüklenen dokümanlar silinir ve tekrar yüklenmeleri gerekir.
-"""
-
 import sys
 import tempfile
 from pathlib import Path
@@ -31,17 +19,17 @@ config.RERANK_MODEL = st.secrets.get("RERANK_MODEL", "")  # ücretsiz tier RAM'i
 # Geçici klasör: Streamlit Cloud yeniden başlayınca sıfırlanır.
 config.PERSIST_DIR = Path(tempfile.gettempdir()) / "doc_int_chroma"
 
-from logic.chunker import chunk_pages
-from logic.document_loader import SUPPORTED_EXTENSIONS, load_document
-from logic.embeddings import embed_texts
-from logic.rag import answer_question
-from logic.vector_store import add_document, clear_all, delete_document, list_documents
+from chunker import chunk_pages
+from document_loader import SUPPORTED_EXTENSIONS, load_document
+from embeddings import embed_texts
+from rag import answer_question
+from vector_store import add_document, clear_all, delete_document, list_documents
 
 PERSIST_DIR = config.PERSIST_DIR
 
 
-st.set_page_config(page_title="Doküman Asistanı", layout="wide")
-st.title("Doküman Asistanı")
+st.set_page_config(page_title="Document Insight Agent", layout="wide")
+st.title("Doocument Insight Agent")
 st.caption(
     "Dokümanlarını yükle, içerikleri hakkında günlük dille soru sor. "
     "Yanıtlar yalnızca senin yüklediğin belgelere dayanır."
