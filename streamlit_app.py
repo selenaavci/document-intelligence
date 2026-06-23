@@ -1,35 +1,58 @@
+"""
+Doküman Asistanı — Streamlit Cloud sürümü.
+
+Lokal sürümle aynı RAG pipeline'ını (hybrid arama + reranking + query rewrite)
+kullanır; tek farkı ayarları logic/config.py yerine Streamlit Cloud Secrets'tan
+okumasıdır. Ayarları "Manage app → Settings → Secrets" altından gireceksin
+(örnek için .streamlit/secrets.toml.example dosyasına bak).
+
+NOT — Streamlit Cloud diski geçicidir: uygulama uyuyup uyandığında veya yeniden
+deploy edildiğinde yüklenen dokümanlar silinir ve tekrar yüklenmeleri gerekir.
+"""
+
 import sys
 import tempfile
 from pathlib import Path
 
 import streamlit as st
 
+# set_page_config, başka HİÇBİR st.* çağrısından önce gelmeli (Streamlit kuralı).
+st.set_page_config(page_title="Doküman Asistanı", layout="wide")
+
 # Repo kökünü (bu klasörün bir üstü) import yoluna ekle — logic/ paketi orada.
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from config import *
+from logic import config
 
-# --- Ayarları Secrets'tan al ve pipeline'a uygula -------------------------
-config.LLM_BASE_URL = st.secrets.get("LLM_BASE_URL", "")
-config.LLM_MODEL = st.secrets.get("LLM_MODEL", "")
-config.LLM_API_KEY = st.secrets.get("LLM_API_KEY", "")
-config.EMBEDDING_MODEL = st.secrets.get("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
-config.RERANK_MODEL = st.secrets.get("RERANK_MODEL", "")  # ücretsiz tier RAM'i için varsayılan kapalı
+
+def _secret(key: str, default: str = "") -> str:
+    """Streamlit Secrets'tan güvenli okuma. Secrets tanımlı değilse hata vermez."""
+    try:
+        value = st.secrets.get(key, default)
+    except Exception:
+        value = default
+    return str(value).strip() if value else default
+
+
+# Bu sürüm ayarları config.py'den DEĞİL, Streamlit Secrets'tan okur.
+config.LLM_BASE_URL = _secret("LLM_BASE_URL")
+config.LLM_MODEL = _secret("LLM_MODEL")
+config.LLM_API_KEY = _secret("LLM_API_KEY")
+config.EMBEDDING_MODEL = _secret("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
+config.RERANK_MODEL = _secret("RERANK_MODEL")  # ücretsiz tier RAM'i için varsayılan kapalı
 # Geçici klasör: Streamlit Cloud yeniden başlayınca sıfırlanır.
 config.PERSIST_DIR = Path(tempfile.gettempdir()) / "doc_int_chroma"
 
-from chunker import chunk_pages
-from document_loader import SUPPORTED_EXTENSIONS, load_document
-from embeddings import embed_texts
-from rag import answer_question
-from vector_store import add_document, clear_all, delete_document, list_documents
+from logic.chunker import chunk_pages
+from logic.document_loader import SUPPORTED_EXTENSIONS, load_document
+from logic.embeddings import embed_texts
+from logic.rag import answer_question
+from logic.vector_store import add_document, clear_all, delete_document, list_documents
 
 PERSIST_DIR = config.PERSIST_DIR
 
-
-st.set_page_config(page_title="Document Insight Agent", layout="wide")
-st.title("Doocument Insight Agent")
+st.title("Doküman Asistanı")
 st.caption(
     "Dokümanlarını yükle, içerikleri hakkında günlük dille soru sor. "
     "Yanıtlar yalnızca senin yüklediğin belgelere dayanır."
@@ -37,9 +60,14 @@ st.caption(
 
 if not config.LLM_BASE_URL or not config.LLM_MODEL:
     st.error(
-        "Model bilgileri eksik. Streamlit Cloud → Settings → Secrets altına "
-        "LLM_BASE_URL ve LLM_MODEL değerlerini gir."
+        "Model bilgileri Secrets'tan okunamadı. Streamlit Cloud → **Manage app → "
+        "Settings → Secrets** altına en az `LLM_BASE_URL` ve `LLM_MODEL` gir, "
+        "sonra uygulamayı yeniden başlat (Reboot)."
     )
+    with st.expander("Secrets durumu (değerler gizli)"):
+        for key in ("LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "EMBEDDING_MODEL", "RERANK_MODEL"):
+            found = bool(_secret(key))
+            st.write(f"{'✓' if found else '✗'} `{key}` — {'bulundu' if found else 'boş/yok'}")
     st.stop()
 
 if "messages" not in st.session_state:
