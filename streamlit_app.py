@@ -1,0 +1,158 @@
+"""
+Doküman Asistanı — Streamlit Cloud sürümü.
+
+Lokal sürümle aynı RAG pipeline'ını (hybrid arama + reranking + query rewrite)
+kullanır; tek farkı ayarları logic/config.py yerine Streamlit Cloud Secrets'tan
+okumasıdır. Ayarları "Manage app → Settings → Secrets" altından gireceksin
+(örnek için .streamlit/secrets.toml.example dosyasına bak).
+
+NOT — Streamlit Cloud diski geçicidir: uygulama uyuyup uyandığında veya yeniden
+deploy edildiğinde yüklenen dokümanlar silinir ve tekrar yüklenmeleri gerekir.
+"""
+
+import sys
+import tempfile
+from pathlib import Path
+
+import streamlit as st
+
+# Repo kökünü (bu klasörün bir üstü) import yoluna ekle — logic/ paketi orada.
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from logic import config
+
+# --- Ayarları Secrets'tan al ve pipeline'a uygula -------------------------
+config.LLM_BASE_URL = st.secrets.get("LLM_BASE_URL", "")
+config.LLM_MODEL = st.secrets.get("LLM_MODEL", "")
+config.LLM_API_KEY = st.secrets.get("LLM_API_KEY", "")
+config.EMBEDDING_MODEL = st.secrets.get("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
+config.RERANK_MODEL = st.secrets.get("RERANK_MODEL", "")  # ücretsiz tier RAM'i için varsayılan kapalı
+# Geçici klasör: Streamlit Cloud yeniden başlayınca sıfırlanır.
+config.PERSIST_DIR = Path(tempfile.gettempdir()) / "doc_int_chroma"
+
+from logic.chunker import chunk_pages
+from logic.document_loader import SUPPORTED_EXTENSIONS, load_document
+from logic.embeddings import embed_texts
+from logic.rag import answer_question
+from logic.vector_store import add_document, clear_all, delete_document, list_documents
+
+PERSIST_DIR = config.PERSIST_DIR
+
+
+st.set_page_config(page_title="Doküman Asistanı", layout="wide")
+st.title("Doküman Asistanı")
+st.caption(
+    "Dokümanlarını yükle, içerikleri hakkında günlük dille soru sor. "
+    "Yanıtlar yalnızca senin yüklediğin belgelere dayanır."
+)
+
+if not config.LLM_BASE_URL or not config.LLM_MODEL:
+    st.error(
+        "Model bilgileri eksik. Streamlit Cloud → Settings → Secrets altına "
+        "LLM_BASE_URL ve LLM_MODEL değerlerini gir."
+    )
+    st.stop()
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "last_sources" not in st.session_state:
+    st.session_state.last_sources = {}
+
+
+def render_sources(sources) -> None:
+    if not sources:
+        return
+    with st.expander(f"Yanıtın dayandığı doküman bölümleri ({len(sources)})"):
+        for c in sources:
+            st.markdown(f"**{c.document_name} — sayfa {c.page_number}**")
+            st.caption(c.text[:800] + ("…" if len(c.text) > 800 else ""))
+
+
+with st.sidebar:
+    st.header("Doküman yükle")
+    st.caption("Yüklenen dokümanlar geçicidir; uygulama yeniden başlarsa tekrar yükle.")
+    uploaded = st.file_uploader(
+        "PDF, Word, metin (TXT), Markdown veya web sayfası (HTML) dosyaları",
+        type=[ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS],
+        accept_multiple_files=True,
+    )
+    if uploaded and st.button("Dokümanları ekle", type="primary", use_container_width=True):
+        progress = st.progress(0.0)
+        for i, f in enumerate(uploaded):
+            try:
+                pages = load_document(f.name, f)
+                if not pages:
+                    st.warning(f"'{f.name}' boş görünüyor veya içinden metin okunamadı.")
+                    continue
+                chunks = chunk_pages(pages, max_chars=config.CHUNK_SIZE, overlap=config.CHUNK_OVERLAP)
+                add_document(PERSIST_DIR, f.name, chunks, embed_texts([c.text for c in chunks]))
+                st.success(f"'{f.name}' eklendi.")
+            except Exception as e:
+                st.error(f"'{f.name}' eklenirken bir sorun oluştu: {e}")
+            progress.progress((i + 1) / len(uploaded))
+
+    st.divider()
+    st.header("Yüklenen dokümanlar")
+    docs = list_documents(PERSIST_DIR)
+    if not docs:
+        st.info("Henüz doküman yüklenmedi.")
+        selected_docs = None
+    else:
+        names = [d["name"] for d in docs]
+        for d in docs:
+            col1, col2 = st.columns([4, 1])
+            col1.write(f"• {d['name']}")
+            if col2.button("Sil", key=f"del_{d['name']}"):
+                delete_document(PERSIST_DIR, d["name"])
+                st.rerun()
+        selected_docs = st.multiselect(
+            "Yalnızca belirli dokümanlarda ara (boş bırakırsan hepsinde arar)",
+            options=names,
+            default=[],
+        )
+        if st.button("Tüm dokümanları temizle", use_container_width=True):
+            clear_all(PERSIST_DIR)
+            st.session_state.messages = []
+            st.session_state.last_sources = {}
+            st.rerun()
+
+
+for i, msg in enumerate(st.session_state.messages):
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        render_sources(st.session_state.last_sources.get(i))
+
+
+if prompt := st.chat_input("Dokümanların hakkında bir soru yaz…"):
+    if not list_documents(PERSIST_DIR):
+        st.warning("Önce sol taraftan en az bir doküman yüklemelisin.")
+        st.stop()
+
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Yanıt hazırlanıyor…"):
+            try:
+                history = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.messages[:-1]
+                ]
+                result = answer_question(
+                    question=prompt,
+                    persist_dir=PERSIST_DIR,
+                    history=history,
+                    top_k=config.TOP_K,
+                    document_filter=selected_docs or None,
+                )
+            except Exception as e:
+                st.error(f"Yanıt alınamadı: {e}")
+                st.stop()
+
+        st.markdown(result.answer)
+        idx = len(st.session_state.messages)
+        st.session_state.messages.append({"role": "assistant", "content": result.answer})
+        st.session_state.last_sources[idx] = result.sources
+        render_sources(result.sources)
