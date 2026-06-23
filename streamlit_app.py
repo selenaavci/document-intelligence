@@ -8,7 +8,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from logic import config
+from config import *
 
 # --- Ayarları Secrets'tan al ve pipeline'a uygula -------------------------
 config.LLM_BASE_URL = st.secrets.get("LLM_BASE_URL", "")
