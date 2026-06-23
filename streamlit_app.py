@@ -211,7 +211,7 @@ def answer(question, history, chunks, vectors):
 
 
 # === Arayüz ===============================================================
-st.title("Document Insigt Agent")
+st.title("Document Insight Agent")
 st.caption("Dokümanlarını yükle, içerikleri hakkında günlük dille soru sor. "
            "Yanıtlar yalnızca senin yüklediğin belgelere dayanır.")
 
