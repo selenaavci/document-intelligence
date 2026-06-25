@@ -1,15 +1,24 @@
+"""
+Doküman Asistanı — Streamlit Cloud sürümü (tek dosya, kendi içinde tam).
+
+Ayarları Streamlit Cloud Secrets'tan okur. Yerel sürümden farkları:
+- logic/ paketine bağımlı DEĞİL (import yolu sorunu olmaz).
+- ChromaDB KULLANMAZ — bunun yerine hafif bellek-içi vektör deposu kullanır
+  (Streamlit Cloud'da Python 3.14 + protobuf ile chromadb çöküyor; ayrıca
+  Cloud diski geçici olduğu için kalıcı DB'nin de anlamı yok).
+
+NOT: Yüklenen dokümanlar yalnızca o oturumda hafızada tutulur; uygulama
+yeniden başlarsa tekrar yüklemen gerekir.
+"""
+
 import io
-import json
 import re
-import ssl
 from dataclasses import dataclass
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 import numpy as np
 import streamlit as st
 
-st.set_page_config(page_title="Document Insight Agent", layout="wide")
+st.set_page_config(page_title="Doküman Asistanı", layout="wide")
 
 
 # === Ayarlar (Secrets) ====================================================
@@ -108,23 +117,79 @@ def load_document(name, data):
     raise ValueError(f"Desteklenmeyen format: {name}")
 
 
-def chunk_text(text, max_chars=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
-    if len(text) <= max_chars:
-        return [text]
+# Mevzuat madde başlıkları: "MADDE 5", "GEÇİCİ MADDE 1", "EK MADDE 2".
+_ARTICLE_RE = re.compile(
+    r"(?=^\s*(?:GEÇİCİ\s+|EK\s+)?MADDE\s+\d+)", re.IGNORECASE | re.MULTILINE
+)
+# Cümle sonu: nokta/soru/ünlem + boşluk + büyük harf/rakam ile başlayan yeni cümle.
+_SENTENCE_RE = re.compile(r"""(?<=[.!?…])["'”’\)\]]*\s+(?=[A-ZÇĞİÖŞÜ0-9])""")
+
+
+def _split_sentences(text):
+    sentences = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        for sent in _SENTENCE_RE.split(line):
+            sent = sent.strip()
+            if sent:
+                sentences.append(sent)
+    return sentences
+
+
+def _hard_split(sentence, max_chars):
     parts, start = [], 0
-    while start < len(text):
-        end = min(len(text), start + max_chars)
-        if end < len(text):
-            for sep in ("\n\n", "\n", ". ", " "):
-                cut = text.rfind(sep, start + max_chars // 2, end)
-                if cut != -1:
-                    end = cut + len(sep)
-                    break
-        parts.append(text[start:end].strip())
-        if end >= len(text):
-            break
-        start = max(end - overlap, start + 1)
+    while start < len(sentence):
+        end = min(len(sentence), start + max_chars)
+        if end < len(sentence):
+            cut = sentence.rfind(" ", start + max_chars // 2, end)
+            if cut != -1:
+                end = cut
+        parts.append(sentence[start:end].strip())
+        start = end
     return [p for p in parts if p]
+
+
+def _pack(sentences, max_chars, overlap):
+    chunks, current, current_len = [], [], 0
+    for sent in sentences:
+        if len(sent) > max_chars:
+            if current:
+                chunks.append(" ".join(current))
+                current, current_len = [], 0
+            chunks.extend(_hard_split(sent, max_chars))
+            continue
+        addition = len(sent) + (1 if current else 0)
+        if current and current_len + addition > max_chars:
+            chunks.append(" ".join(current))
+            carry, carry_len = [], 0
+            for prev in reversed(current):
+                if carry_len + len(prev) > overlap and carry:
+                    break
+                carry.insert(0, prev)
+                carry_len += len(prev) + 1
+            current = carry
+            current_len = sum(len(s) + 1 for s in current)
+        current.append(sent)
+        current_len += addition
+    if current:
+        chunks.append(" ".join(current))
+    return [c.strip() for c in chunks if c.strip()]
+
+
+def chunk_text(text, max_chars=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
+    """Madde-farkındalıklı, cümle-bütünlüğü korunan parçalama (yarım cümle bırakmaz)."""
+    if len(text) <= max_chars:
+        stripped = text.strip()
+        return [stripped] if stripped else []
+    blocks = [b for b in _ARTICLE_RE.split(text) if b.strip()] or [text]
+    parts = []
+    for block in blocks:
+        sentences = _split_sentences(block)
+        if sentences:
+            parts.extend(_pack(sentences, max_chars, overlap))
+    return parts
 
 
 # === Embedding (lokal, ücretsiz) ==========================================
@@ -170,22 +235,21 @@ def retrieve(question, chunks, vectors):
     return [chunks[i] for i in best]
 
 
-# === LLM (OpenAI-uyumlu HTTP) =============================================
+# === LLM (st.secrets + openai SDK — AI Hub streamlit kalıbı) ==============
+@st.cache_resource(show_spinner=False)
+def _llm_client(base_url, api_key):
+    from openai import OpenAI
+
+    # api_key boş olsa bile (anahtarsız lokal uç noktalar için) istemci kurulur.
+    return OpenAI(api_key=api_key or "no-key", base_url=base_url or None)
+
+
 def llm_chat(messages):
-    payload = {"model": LLM_MODEL, "messages": messages, "temperature": LLM_TEMPERATURE}
-    headers = {"Content-Type": "application/json"}
-    if LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
-    req = Request(f"{LLM_BASE_URL.rstrip('/')}/chat/completions",
-                  data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-    try:
-        with urlopen(req, timeout=90, context=ssl.create_default_context()) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except HTTPError as e:
-        raise RuntimeError(f"LLM hata ({e.code}): {e.read().decode('utf-8', 'replace')}") from e
-    except URLError as e:
-        raise RuntimeError(f"LLM sunucusuna bağlanılamadı: {e.reason}") from e
-    return data["choices"][0]["message"]["content"]
+    client = _llm_client(LLM_BASE_URL, LLM_API_KEY)
+    resp = client.chat.completions.create(
+        model=LLM_MODEL, messages=messages, temperature=LLM_TEMPERATURE,
+    )
+    return resp.choices[0].message.content
 
 
 SYSTEM_PROMPT = (
@@ -211,7 +275,7 @@ def answer(question, history, chunks, vectors):
 
 
 # === Arayüz ===============================================================
-st.title("Document Insight Agent")
+st.title("Doküman Asistanı")
 st.caption("Dokümanlarını yükle, içerikleri hakkında günlük dille soru sor. "
            "Yanıtlar yalnızca senin yüklediğin belgelere dayanır.")
 
@@ -229,13 +293,23 @@ for key, default in (("messages", []), ("chunks", []), ("vectors", None), ("sour
         st.session_state[key] = default
 
 
+def _preview(text, limit=800):
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    cut = max(head.rfind(". "), head.rfind("\n"), head.rfind(" "))
+    if cut > limit // 2:
+        head = head[: cut + 1]
+    return head.rstrip() + " …"
+
+
 def render_sources(sources):
     if not sources:
         return
     with st.expander(f"Yanıtın dayandığı doküman bölümleri ({len(sources)})"):
         for c in sources:
             st.markdown(f"**{c.document_name} — sayfa {c.page_number}**")
-            st.caption(c.text[:800] + ("…" if len(c.text) > 800 else ""))
+            st.caption(_preview(c.text))
 
 
 with st.sidebar:

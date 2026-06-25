@@ -10,21 +10,21 @@ from pathlib import Path
 # Kurum içi / lokal dil modeline ".../chat/completions" HTTP uç noktasından
 # bağlanılır. Bu üç bilgiyi BT / sistem ekibinden alabilirsin.
 
-LLM_BASE_URL = ""   # örn. "http://10.0.0.5:8000/v1"
-LLM_MODEL = ""      # altyapında tanımlı modelin adı
-LLM_API_KEY = ""    # gerekmiyorsa boş bırak
+LLM_BASE_URL = ""   # ← BURAYA YAZ: LLM uç noktası.  örn: "http://10.0.0.5:8000/v1"
+LLM_MODEL = ""      # ← BURAYA YAZ: kullanılacak model adı.  örn: "qwen2.5:7b"
+LLM_API_KEY = ""    # ← BURAYA YAZ: erişim anahtarı (gerekmiyorsa boş bırak)
 LLM_TEMPERATURE = 0.2
 
 
 # 2) EMBEDDING MODELİ ------------------------------------------------------
 # Metni anlamca aranabilir vektörlere çevirir (TR + EN). İlk çalıştırmada iner.
-EMBEDDING_MODEL = ""   # örn. "intfloat/multilingual-e5-small"
+EMBEDDING_MODEL = ""   # ← BURAYA YAZ: embedding modeli.  örn: "intfloat/multilingual-e5-small"
 
 
 # 3) RERANKER MODELİ -------------------------------------------------------
 # Aday pasajları soruya göre yeniden sıralar (kalitenin en çok arttığı adım).
 # Boş bırakırsan reranking devre dışı kalır, sadece arama skorları kullanılır.
-RERANK_MODEL = ""      # örn. "BAAI/bge-reranker-v2-m3"
+RERANK_MODEL = ""      # ← BURAYA YAZ (opsiyonel): reranker modeli.  örn: "BAAI/bge-reranker-v2-m3"
 
 
 # 4) VERİ KLASÖRÜ ----------------------------------------------------------
